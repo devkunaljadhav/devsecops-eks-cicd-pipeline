@@ -48,7 +48,7 @@ pipeline{
         }
         stage('Checkout from Git'){
             steps{
-                git branch: 'main', url: 'https://github.com/ReyazShaik/devsecops-2048.git'
+                git branch: 'main', url: 'https://github.com/devkunaljadhav/devsecops-2048.git'
             }
         }
         stage("Sonarqube Analysis "){
@@ -81,20 +81,20 @@ pipeline{
                 script{
                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
                        sh "docker build -t 2048 ."
-                       sh "docker tag 2048 trainerreyaz/2048:latest "
-                       sh "docker push trainerreyaz/2048:latest "
+                       sh "docker tag 2048 kunaljadhav1625/2048:latest "
+                       sh "docker push kunaljadhav1625/2048:latest "
                     }
                 }
             }
         }
         stage("TRIVY"){
             steps{
-                sh "trivy image trainerreyaz/2048:latest > trivy.txt"
+                sh "trivy image kunaljadhav1625/2048:latest > trivy.txt"
             }
         }
         stage('Deploy to container'){
             steps{
-                sh 'docker run -d --name 2048 -p 3000:3000 trainerreyaz/2048:latest'
+                sh 'docker run -d --name 2048 -p 3000:3000 kunaljadhav1625/2048:latest'
             }
         }
         stage('Deploy to kubernetes'){
