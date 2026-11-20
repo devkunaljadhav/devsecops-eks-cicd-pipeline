@@ -190,7 +190,7 @@ Now create a new pipeline job for the EkS provision
 
 New Item --> Pipeline --> EKSJOB 
 
-Create S3 private Bucket : devsecops-2048-reyaz
+Create S3 private Bucket : devsecops-2048-kunal
 
 This project is parameterized
 Name: action
@@ -344,7 +344,7 @@ Go to your Sonarqube Server. http://ip:9000
 
 Click on Administration → Security → Users → Click on Tokens dashes and Update Token → Give it a name game → and click on Generate Token
 
-squ_7c03255fcf53a38a008f10779fbf3024888e0a3d
+squ_c9c58c71cdb88f2f0c2047a98e0af7f5747bbfc6
 
 Goto Jenkins Dashboard → Manage Jenkins → Credentials → Add Secret Text.
 Kind = Secret Text
@@ -410,7 +410,7 @@ pipeline{
         }
         stage('Checkout from Git'){
             steps{
-                git branch: 'main', url: 'https://github.com/ReyazShaik/devsecops-2048.git'
+                git branch: 'main', url: 'https://github.com/devkunaljadhav/devsecops-2048.git'
             }
         }
         stage("Sonarqube Analysis "){
@@ -443,20 +443,20 @@ pipeline{
                 script{
                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
                        sh "docker build -t 2048 ."
-                       sh "docker tag 2048 trainerreyaz/2048:latest "
-                       sh "docker push trainerreyaz/2048:latest "
+                       sh "docker tag 2048 kunaljadhav1625/2048:latest "
+                       sh "docker push kunaljadhav1625/2048:latest "
                     }
                 }
             }
         }
         stage("TRIVY"){
             steps{
-                sh "trivy image trainerreyaz/2048:latest > trivy.txt"
+                sh "trivy image kunaljadhav1625/2048:latest > trivy.txt"
             }
         }
         stage('Deploy to container'){
             steps{
-                sh 'docker run -d --name 2048 -p 3000:3000 trainerreyaz/2048:latest'
+                sh 'docker run -d --name 2048 -p 3000:3000 kunaljadhav1625/2048:latest'
             }
         }
     }
