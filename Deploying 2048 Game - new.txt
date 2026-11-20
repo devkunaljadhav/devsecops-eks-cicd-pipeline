@@ -527,7 +527,7 @@ pipeline{
         }
         stage('Checkout from Git'){
             steps{
-                git branch: 'main', url: 'https://github.com/ReyazShaik/devsecops-2048.git'
+                git branch: 'main', url: 'https://github.com/devkunaljadhav/devsecops-2048.git'
             }
         }
         stage("Sonarqube Analysis "){
@@ -560,20 +560,20 @@ pipeline{
                 script{
                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
                        sh "docker build -t 2048 ."
-                       sh "docker tag 2048 trainerreyaz/2048:latest "
-                       sh "docker push trainerreyaz/2048:latest "
+                       sh "docker tag 2048 kunaljadhav1625/2048:latest "
+                       sh "docker push kunaljadhav1625/2048:latest "
                     }
                 }
             }
         }
         stage("TRIVY"){
             steps{
-                sh "trivy image trainerreyaz/2048:latest > trivy.txt"
+                sh "trivy image kunaljadhav1625/2048:latest > trivy.txt"
             }
         }
         stage('Deploy to container'){
             steps{
-                sh 'docker run -d --name 2048 -p 3000:3000 trainerreyaz/2048:latest'
+                sh 'docker run -d --name 2048 -p 3000:3000 kunaljadhav1625/2048:latest'
             }
         }
         stage('Deploy to kubernetes'){
@@ -597,113 +597,3 @@ If load balancer dosent work ---> go to EKS security group and add All traffic :
 
 
 
---------------------------------------------------------------
-
-Extras
------
-
-Delete IAM roles to run the pipeline again. If roles exits pipeline throws error that roles exits
-
-eks-cluster-cloud
-eks-node-group-cloud
-
-Note: if you are re-running the job, delete container first
-
-docker ps -a
-docker stop contid
-docker rm contid	
-
-
-
-
-if you re-create eks again on same ubuntu machine, do below commands
-
-
-aws eks list-clusters --region ap-south-1
-
-aws eks update-kubeconfig --region ap-south-1 --name prod-cluster
-
-
-kubectl get nodes
-
-kubectl get all
-
-
-
-pipeline{
-    agent any
-    tools{
-        jdk 'jdk23'
-        nodejs 'node23'
-    }
-    environment {
-        SCANNER_HOME=tool 'sonar-scanner'
-    }
-    stages {
-        stage('clean workspace'){
-            steps{
-                cleanWs()
-            }
-        }
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'main', url: 'https://github.com/ReyazShaik/devsecops-2048.git'
-            }
-        }
-        stage("Sonarqube Analysis "){
-            steps{
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Game \
-                    -Dsonar.projectKey=Game '''
-                }
-            }
-        }
-        stage("quality gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
-                }
-            }
-        }
-        stage('Install Dependencies') {
-            steps {
-                sh "npm install"
-            }
-        }
-        stage('TRIVY FS SCAN') {
-            steps {
-                sh "trivy fs . > trivyfs.txt"
-            }
-        }
-        stage("Docker Build & Push"){
-            steps{
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
-                       sh "docker build -t 2048 ."
-                       sh "docker tag 2048 trainerreyaz/2048:latest "
-                       sh "docker push trainerreyaz/2048:latest "
-                    }
-                }
-            }
-        }
-        stage("TRIVY"){
-            steps{
-                sh "trivy image trainerreyaz/2048:latest > trivy.txt"
-            }
-        }
-        stage('Deploy to container'){
-            steps{
-                sh 'docker run -d --name 2048 -p 3000:3000 trainerreyaz/2048:latest'
-            }
-        }
-        stage('Deploy to kubernetes'){
-            steps{
-                script{
-                    withKubeConfig(caCertificate: '', clusterName: '', contextName: '', credentialsId: 'k8s', namespace: '', restrictKubeConfigAccess: false, serverUrl: '') {
-                       sh 'kubectl apply -f deployment.yaml'
-                  }
-                }
-            }
-        }
-    }
-}
