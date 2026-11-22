@@ -1,599 +1,635 @@
-Deploying 2048 Game on Docker and Kubernetes(EKS) with Jenkins CI/CD
-==============================================================
+DEPLOYING THE 2048 GAME WITH JENKINS, DOCKER, AND AMAZON EKS
+============================================================
+
+PROJECT SUMMARY
+---------------
+
+This guide describes an end-to-end DevSecOps deployment for the 2048 web
+application. Jenkins orchestrates source checkout, static code analysis,
+dependency installation, filesystem and container scanning, image delivery,
+container validation, and deployment to Amazon Elastic Kubernetes Service
+(Amazon EKS).
+
+The implementation uses:
+
+- Amazon EC2 for the Jenkins and tooling host
+- Amazon S3 for Terraform remote state
+- Terraform for EKS infrastructure provisioning
+- Jenkins for CI/CD orchestration
+- SonarQube for static code analysis
+- Trivy for filesystem and container image scanning
+- Docker and Docker Hub for image delivery
+- Kubernetes and kubectl for application deployment
 
 
-Step 1: Setting up AWS EC2 Instance
+SECURITY NOTICE
+---------------
+
+Do not commit credentials, kubeconfig files, tokens, private keys, or
+passwords to Git or application source code.
+
+Before following this guide:
+
+1. Use Jenkins credentials or AWS Secrets Manager for sensitive values.
+2. Replace every placeholder, including <dockerhub-user>, with your own values.
+3. Rotate credentials if they have been exposed or committed historically.
+4. Restrict the Jenkins EC2 security group and IAM role by least privilege.
+
+
+1. AWS EC2 HOST
+---------------
+
+Create an Ubuntu EC2 instance for Jenkins and DevOps tooling.
+
+Recommended baseline:
+
+- Instance type: m7i-flex.large or an equivalent instance
+- Operating system: Ubuntu 24.04 LTS
+- Storage: 50 GB or more
+- Network: SSH access restricted to a trusted IP address
+- Security group: TCP 8080 and 9000 only when required, restricted by source
+- IAM role: Permissions limited to the AWS resources used by this project
+
+After connecting to the instance:
+
+    sudo apt update
+    sudo apt upgrade -y
+
+
+2. INSTALL JENKINS, JAVA, AND DOCKER
+------------------------------------
+
+Create /opt/jenkins/setup.sh and use the following script:
+
+    #!/usr/bin/env bash
+
+    set -euo pipefail
+
+    echo "Installing Java 21..."
+    sudo apt update
+    sudo apt install -y openjdk-21-jdk wget curl
+    java -version
+
+    echo "Installing Jenkins WAR..."
+    sudo mkdir -p /opt/jenkins
+    cd /opt/jenkins
+
+    if [ ! -f jenkins.war ]; then
+        wget https://get.jenkins.io/war/2.552/jenkins.war
+    fi
+
+    sudo chmod 755 jenkins.war
+
+    echo "Starting Jenkins..."
+    nohup java -Djava.net.preferIPv4Stack=true \
+        -jar /opt/jenkins/jenkins.war \
+        > /opt/jenkins/jenkins.log 2>&1 &
+
+    echo "Jenkins URL: http://<server-ip>:8080"
+    echo "Jenkins log: /opt/jenkins/jenkins.log"
+
+    echo "Installing Docker..."
+    sudo apt install -y ca-certificates curl gnupg
+
+    sudo install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg |
+        sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+    echo \
+        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+        $(. /etc/os-release && echo "$VERSION_CODENAME") stable" |
+        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    sudo apt update
+    sudo apt install -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-compose-plugin
+
+    sudo usermod -aG docker ubuntu
+    sudo systemctl enable docker
+    sudo systemctl start docker
+
+Make the script executable and run it:
+
+    chmod +x setup.sh
+    ./setup.sh
+
+Verify Jenkins:
+
+    ps -ef | grep jenkins.war | grep -v grep
+    tail -f /opt/jenkins/jenkins.log
+
+Retrieve the initial administrator password:
+
+    sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+
+Open:
+
+    http://<server-ip>:8080
+
+
+3. INSTALL TERRAFORM, KUBECTL, AND AWS CLI
+-------------------------------------------
+
+Create /opt/jenkins/setup-aws-tools.sh:
+
+    #!/usr/bin/env bash
+
+    set -euo pipefail
+
+    echo "Installing Terraform..."
+    sudo apt install -y wget gpg
+    wget -qO- https://apt.releases.hashicorp.com/gpg |
+        sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" |
+        sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+    sudo apt update
+    sudo apt install -y terraform
+
+    echo "Installing kubectl..."
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+    rm -f kubectl
+    kubectl version --client
+
+    echo "Installing AWS CLI..."
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
+        -o awscliv2.zip
+    sudo apt install -y unzip
+    unzip awscliv2.zip
+    sudo ./aws/install
+    rm -rf aws awscliv2.zip
+
+    terraform --version
+    aws --version
+
+Make the script executable and run it:
+
+    chmod +x setup-aws-tools.sh
+    ./setup-aws-tools.sh
+
+Configure AWS CLI using a role or environment-specific credentials:
+
+    aws configure
+    aws sts get-caller-identity
+
+
+4. INSTALL TRIVY
+----------------
+
+    sudo apt update
+    sudo apt upgrade -y
+    sudo apt install -y wget apt-transport-https gnupg lsb-release
+
+    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key |
+        sudo tee /etc/apt/trusted.gpg.d/trivy.asc > /dev/null
+
+    echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" |
+        sudo tee /etc/apt/sources.list.d/trivy.list
+
+    sudo apt update
+    sudo apt install -y trivy libatomic1
+
+    trivy --version
+
+
+5. DEPLOY SONARQUBE
+-------------------
+
+Allow Docker access for the administrative setup:
+
+    sudo chmod 777 /var/run/docker.sock
+    sudo systemctl daemon-reload
+    sudo systemctl restart docker.service
+
+Start SonarQube:
+
+    docker run -d \
+        --name sonar \
+        --restart unless-stopped \
+        -p 9000:9000 \
+        sonarqube:lts-community
+
+Open SonarQube:
+
+    http://<server-ip>:9000
+
+Log in with the initial administrator credentials, then change the default
+password immediately.
+
+
+6. CREATE THE TERRAFORM INFRASTRUCTURE JOB
+-------------------------------------------
+
+Create a private Amazon S3 bucket for Terraform remote state. Update the
+S3 bucket name in the backend configuration before running Terraform.
+
+In Jenkins:
+
+1. Open "Manage Jenkins".
+2. Open "Plugins".
+3. Install the Terraform plugin.
+4. Restart Jenkins.
+5. Open "Manage Jenkins" -> "Tools".
+6. Add Terraform:
+   - Name: terraform
+   - Install automatically: unchecked
+   - Installation directory: /usr/bin
+
+Create a parameterized pipeline job named EKSJOB.
+
+Job parameter:
+
+    Name: action
+    Type: Choice
+    Choices:
+        apply
+        destroy
+
+Use the following Jenkinsfile:
+
+    pipeline {
+        agent any
+
+        stages {
+            stage('Checkout') {
+                steps {
+                    git branch: 'main',
+                        url: 'https://github.com/<source-owner>/<terraform-repository>.git'
+                }
+            }
+
+            stage('Terraform Version') {
+                steps {
+                    sh 'terraform --version'
+                }
+            }
+
+            stage('Terraform Init') {
+                steps {
+                    dir('EKS_TERRAFORM') {
+                        sh 'terraform init'
+                    }
+                }
+            }
+
+            stage('Terraform Validate') {
+                steps {
+                    dir('EKS_TERRAFORM') {
+                        sh 'terraform validate'
+                    }
+                }
+            }
+
+            stage('Terraform Plan') {
+                steps {
+                    dir('EKS_TERRAFORM') {
+                        sh 'terraform plan'
+                    }
+                }
+            }
+
+            stage('Terraform Apply/Destroy') {
+                steps {
+                    dir('EKS_TERRAFORM') {
+                        sh "terraform ${action} --auto-approve"
+                    }
+                }
+            }
+        }
+    }
+
+Build the job with action=apply to create the cluster. Use action=destroy
+only after application resources have been removed or are no longer required.
+
+
+7. CONFIGURE JENKINS FOR THE APPLICATION PIPELINE
+--------------------------------------------------
+
+Install the following Jenkins plugins:
+
+- Eclipse Temurin installer
+- SonarQube Scanner
+- NodeJS
+- OWASP Dependency-Check
+- Docker
+- Docker Pipeline
+- Docker Commons
+- Docker API
+- Docker Build Step
+- Kubernetes
+- Kubernetes Client API
+- Kubernetes CLI
+
+Configure Jenkins tools:
+
+1. Open "Manage Jenkins" -> "Tools".
+2. Add JDK:
+   - Name: jdk25
+   - Installation source: Adoptium
+   - Select a supported JDK 25 or Java 21 installation
+3. Add SonarQube Scanner:
+   - Name: sonar-scanner
+   - Enable automatic installation
+   - Select an appropriate scanner version
+4. Add Node.js:
+   - Name: node25
+   - Enable automatic installation
+   - Select an appropriate Node.js 25 or LTS version
+5. Add Dependency-Check:
+   - Name: DP-Check
+   - Enable automatic installation
+6. Add Docker:
+   - Name: docker
+   - Enable automatic installation
+
+
+8. CONFIGURE SONARQUBE AUTHENTICATION
+--------------------------------------
+
+In SonarQube:
+
+1. Open "Administration".
+2. Open "Security" -> "Users".
+3. Generate a token with a descriptive name such as "jenkins".
+4. Store the generated token only in a Jenkins secret-text credential.
+
+In Jenkins:
+
+1. Open "Manage Jenkins" -> "Credentials".
+2. Select the global credential domain.
+3. Add a "Secret text" credential:
+   - Secret: the SonarQube token
+   - ID: sonar-token
+   - Description: SonarQube token
+4. Open "Manage Jenkins" -> "System".
+5. Configure a SonarQube server:
+   - Name: sonar-server
+   - Server URL: http://<server-ip>:9000
+   - Authentication token: sonar-token
+
+To configure the Jenkins quality-gate webhook:
+
+1. Open SonarQube "Administration" -> "Configuration" -> "Webhooks".
+2. Create a webhook named "Jenkins".
+3. Set the URL to:
+
+       http://<jenkins-ip>:8080/sonarqube-webhook/
+
+4. Leave the webhook secret empty unless a secret is explicitly configured.
+
+
+9. CONFIGURE DOCKER HUB CREDENTIALS
+------------------------------------
+
+In Jenkins:
+
+1. Open "Manage Jenkins" -> "Credentials".
+2. Select the global credential domain.
+3. Add a "Username with password" credential.
+4. Set the username to the Docker Hub account name.
+5. Set the password to a Docker Hub access token.
+6. Use ID: docker
+
+Prepare the Docker host:
+
+    sudo chmod 777 /var/run/docker.sock
+    sudo systemctl daemon-reload
+    sudo systemctl restart docker.service
+
+If Docker stopped the SonarQube container:
+
+    docker ps -a
+    docker start sonar
+
+
+10. CREATE THE 2048 APPLICATION PIPELINE
+-----------------------------------------
+
+Create a Jenkins pipeline job named 2048-Deployment.
+
+    pipeline {
+        agent any
+
+        tools {
+            jdk 'jdk25'
+            nodejs 'node25'
+        }
+
+        environment {
+            SCANNER_HOME = tool 'sonar-scanner'
+        }
+
+        stages {
+            stage('Clean Workspace') {
+                steps {
+                    cleanWs()
+                }
+            }
+
+            stage('Checkout') {
+                steps {
+                    git branch: 'main',
+                        url: 'https://github.com/devkunaljadhav/devsecops-2048.git'
+                }
+            }
+
+            stage('SonarQube Analysis') {
+                steps {
+                    withSonarQubeEnv('sonar-server') {
+                        sh '''
+                            $SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectName=2048-Game \
+                            -Dsonar.projectKey=2048-Game
+                        '''
+                    }
+                }
+            }
+
+            stage('Quality Gate') {
+                steps {
+                    script {
+                        waitForQualityGate(
+                            abortPipeline: false,
+                            credentialsId: 'sonar-token'
+                        )
+                    }
+                }
+            }
+
+            stage('Install Dependencies') {
+                steps {
+                    sh 'npm install'
+                }
+            }
+
+            stage('Filesystem Scan') {
+                steps {
+                    sh 'trivy fs . --format table --output trivyfs.txt'
+                }
+            }
+
+            stage('Docker Build and Push') {
+                steps {
+                    script {
+                        withDockerRegistry(
+                            credentialsId: 'docker',
+                            toolName: 'docker'
+                        ) {
+                            sh 'docker build -t 2048 .'
+                            sh 'docker tag 2048 <dockerhub-user>/2048:latest'
+                            sh 'docker push <dockerhub-user>/2048:latest'
+                        }
+                    }
+                }
+            }
+
+            stage('Container Image Scan') {
+                steps {
+                    sh 'trivy image --format table --output trivy.txt <dockerhub-user>/2048:latest'
+                }
+            }
+
+            stage('Deploy to Container') {
+                steps {
+                    sh '''
+                        docker rm -f 2048 2>/dev/null || true
+                        docker run -d \
+                            --name 2048 \
+                            -p 3000:3000 \
+                            <dockerhub-user>/2048:latest
+                    '''
+                }
+            }
+        }
+    }
+
+
+11. TROUBLESHOOT DOCKER API COMPATIBILITY
+------------------------------------------
+
+If Docker API compatibility errors occur:
+
+    sudo systemctl edit docker.service
+
+Add the override before the discard marker:
+
+    [Service]
+    Environment=DOCKER_MIN_API_VERSION=1.24
+
+Save and exit, then restart:
+
+    sudo systemctl daemon-reload
+    sudo systemctl restart docker
+    docker start sonar
+
+
+12. CONFIGURE THE EKS KUBERNETES CREDENTIAL
+---------------------------------------------
+
+Update kubeconfig on the Jenkins host:
+
+    aws eks update-kubeconfig \
+        --name EKS_CLUSTER \
+        --region ap-south-1
+
+Verify access:
+
+    kubectl get nodes
+    kubectl get namespaces
+
+Export the kubeconfig securely to an administrator-controlled local machine.
+Never store this file in Git or Jenkins logs.
+
+In Jenkins:
+
+1. Open "Manage Jenkins" -> "Credentials".
+2. Select the global credential domain.
+3. Add a "Secret file" credential.
+4. Upload the kubeconfig file.
+5. Use ID: k8s
+6. Use Description: EKS kubeconfig
+
+
+13. DEPLOY THE APPLICATION TO EKS
 ----------------------------------
-Creating an EC2 instance m7i-flex.large with Ubuntu 24 AMI, t2.large, and 50 GB storage
-Assigning an IAM role with Admin access
 
-Step 2: Installation of Required Tools on the Instance
-------------------------------------------------------
-
-Docker
-Jenkins
-Java
-SonarQube container
-AWS CLI
-Kubectl
-Terraform
-
-Step 3: Jenkins Job Configuration
------------------------------------
-Creating Jenkins Pipeline for:
-========================
-Pipeline 1: Creating an EKS cluster with TF
-Pipeline 2: Deploying the 2048 application
-
-Configuring the Jenkins job stages:
------------------------------------
-Sending files to SonarQube for static code analysis
-Running npm install
-Implementing OWASP for security checks
-Installing and running Docker Scout for container security
-Scanning files and Docker images with Docker Scout
-Building and pushing Docker images
-Deploying the application to the EKS cluster
-
-==================================
-Process
-=================================
-
-Script1 for Java,Jenkins,Docker
-
-vi script1.sh
-
-#!/bin/bash
-
-set -e
-
-echo "=============================="
-echo " Jenkins WAR Auto Setup Script"
-echo "=============================="
-
-# Update system
-sudo apt update -y
-
-# Install Java 21, wget, curl
-sudo apt install -y openjdk-21-jdk wget curl
-
-# Verify Java
-java -version
-
-# Create Jenkins directory
-sudo mkdir -p /opt/jenkins
-cd /opt/jenkins
-
-# Download Jenkins WAR
-if [ ! -f jenkins.war ]; then
-  echo "Downloading Jenkins WAR..."
-  wget https://get.jenkins.io/war/2.552/jenkins.war
-else
-  echo "Jenkins WAR already exists"
-fi
-
-# Permissions
-sudo chmod 755 jenkins.war
-
-# Run Jenkins in background
-echo "Starting Jenkins in background..."
-nohup java -Djava.net.preferIPv4Stack=true -jar /opt/jenkins/jenkins.war \
-> /opt/jenkins/jenkins.log 2>&1 &
-
-sleep 5
-
-# Show status
-echo "Jenkins process:"
-ps -ef | grep jenkins.war | grep -v grep
-
-echo "=============================="
-echo " Jenkins started successfully "
-echo " URL: http://<SERVER-IP>:8080"
-echo " Log: /opt/jenkins/jenkins.log"
-echo "=============================="
-
-#install docker
-# Add Docker's official GPG key:
-sudo apt-get update
-sudo apt-get install ca-certificates curl gnupg -y
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-# Add the repository to Apt sources:
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
-sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-sudo usermod -aG docker ubuntu
-newgrp docker
-
-===========================================
-
-http://ip:8080
-
-Script 2 for Terraform,kubectl,Awscli
-
-vi script2.sh
-
-#!/bin/bash
-#install terraform
-sudo apt install wget -y
-wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-sudo apt update && sudo apt install terraform
-
-#install Kubectl on Jenkins
-sudo apt update
-sudo apt install curl -y
-curl -LO https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
-sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-kubectl version --client
-
-#install Aws cli
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-sudo apt-get install unzip -y
-unzip awscliv2.zip
-sudo ./aws/install
-
-=======================================================
-
-
-vi trivy.sh
-
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y wget apt-transport-https gnupg lsb-release
-wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo tee /etc/apt/trusted.gpg.d/trivy.asc
-echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-sudo apt update && sudo apt install -y trivy
-trivy --version
-apt install -y libatomic1
-
-
-
-Now Run sonarqube container
-
-sudo chmod 777 /var/run/docker.sock
-systemctl daemon-reload
-systemctl restart docker.service
-
-docker run -d --name sonar -p 9000:9000 sonarqube:lts-community
-
-http://ip:9000
-
-username:admin, password: admin
-
-Step 3: Jenkins Job Configuration
-=================================
-
-Job 1: EKS Provision
------------------------
-
-First change the bucketname in the backend.tf ( devsecops-2048/EKS_TERRAFORM/backend.tf )
-
-Install terraform plugin and restart
-
-let’s find the path to our Terraform (we will use it in the tools section of Terraform)
-
-In EC2 instance run the below command
-
-which terraform 
-
-Now --> Manage Jenkins –> Tools
-
-Terraform --> Name: terraform, uncheck install automatically , install directory = /usr/bin/
-
-Now create a new pipeline job for the EkS provision
-------------------------------------------
-
-
-New Item --> Pipeline --> EKSJOB 
-
-Create S3 private Bucket : devsecops-2048-kunal
-
-This project is parameterized
-Name: action
-choices: 
- apply
- destroy
-
-pipeline{
-    agent any
-    stages {
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'main', url: 'https://github.com/ReyazShaik/devsecops-2048.git'
-            }
-        }
-        stage('Terraform version'){
-             steps{
-                 sh 'terraform --version'
-             }
-        }
-        stage('Terraform init'){
-             steps{
-                 dir('EKS_TERRAFORM') {
-                      sh 'terraform init'
-                   }
-             }
-        }
-        stage('Terraform validate'){
-             steps{
-                 dir('EKS_TERRAFORM') {
-                      sh 'terraform validate'
-                   }
-             }
-        }
-        stage('Terraform plan'){
-             steps{
-                 dir('EKS_TERRAFORM') {
-                      sh 'terraform plan'
-                   }
-             }
-        }
-        stage('Terraform apply/destroy'){
-             steps{
-                 dir('EKS_TERRAFORM') {
-                      sh 'terraform ${action} --auto-approve'
-                   }
-             }
-        }
-    }
-}
-
-
-
---------------------
-NOT REQURIED
----------------------
-Note: In GitHub, i have seperate repos for EKS-Terraform , we can use if required
-
-
-pipeline{
-    agent any
-    stages {
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'main', url: 'https://github.com/ReyazShaik/EKS-Terraform.git'
-            }
-        }
-        stage('Terraform version'){
-             steps{
-                 sh 'terraform --version'
-             }
-        }
-        stage('Terraform init'){
-             steps{
-                 sh 'terraform init'
-                   
-             }
-        }
-        stage('Terraform validate'){
-             steps{
-                 sh 'terraform validate'
-                 
-             }
-        }
-        stage('Terraform plan'){
-             steps{
-                 sh 'terraform plan'
-                 
-             }
-        }
-        stage('Terraform apply/destroy'){
-             steps{
-                 sh 'terraform ${action} --auto-approve'
-                 
-             }
-        }
-    }
-}
-
-
-
-Create a another pipeline 2048 job
----------------------------------------
-
-Plugins installation & setup (Java, Sonar, Nodejs, owasp, Docker)
------------------------------------------------------------------
-
-Go to Jenkins dashboard
-
-Manage Jenkins –> Plugins –> Available Plugins
-
-Search for the Below Plugins
--------------------------------
-
-Eclipse Temurin installer
-
-Sonarqube Scanner
-
-NodeJs
-
-Owasp Dependency-Check
-
-Docker
-
-Docker Commons
-
-Docker Pipeline
-
-Docker API
-
-Docker-build-step
-
-Goto Manage Jenkins → Tools → 
-
-JDK installations --> Add JDK --> Name: jdk25, remove install oracle and add Install from adoptium.net and select jdk 25+36(install automatically)
-
-SonarQube Scanner installations --> Add SonarQube Scanner --> Name=sonar-scanner, install automatically --> version: sonarscanner 8.3 latest
-
-NodeJS installations --> Add NodeJS --> Name: node25--> install automatically --> install from nodejs.org -> version nodejs 25.9.0
-
-Dependency-Check installations --> Name = DP-Check --> install automatically --> Add installer --> select GitHub --> latest
-
-Docker installations --> Name = docker --> install automatically --> Add installer --> select docker.com --> latest
-
-
-
-Configure Sonar Server in Manage Jenkins
-==========================================
-
-Go to your Sonarqube Server. http://ip:9000
-
-Click on Administration → Security → Users → Click on Tokens dashes and Update Token → Give it a name game → and click on Generate Token
-
-squ_c9c58c71cdb88f2f0c2047a98e0af7f5747bbfc6
-
-Goto Jenkins Dashboard → Manage Jenkins → Credentials → Add Secret Text.
-Kind = Secret Text
-Scope = Global
-Secret = Paste the sonar key you copied
-ID = sonar-token
-Desc = sonar-token
-
-Adding sonar server details in Jenkins
----------------------------------
-
-Now, go to Dashboard → Manage Jenkins → System --> SonarQube servers
-Name = sonar-server
-Server URL = http://35.154.52.225:9000
-Server authentication token = sonar-token that you created in credentials
-
-In the Sonarqube Dashboard add a quality gate
-------------------------------------------
-
-Administration–> Configuration–>Webhooks --> create 
-Name = Jenkins
-URL = http://35.154.52.225:8080/sonarqube-webhook/
-Secret = empty
-
-Add Docker credentials to the Jenkins to log in and push the image to Dockerhub
-----------------------------------------------------------------
-
-Manage Jenkins –> Credentials –> global –> add credential
-
-Kind = Username and password
-Username= trainerreyaz
-password = ****
-ID = docker
-Desc = docker
-
-
-sudo chmod 777 /var/run/docker.sock
-systemctl daemon-reload
-systemctl restart docker.service
-
-If you restart docker service, sonar container will be stopped, start it with below command
-
-docker ps -a
-docker start sonar
-
-Lets create a pipeline to create docker image and containers using real application 2048
-==========================================================================================
-
-pipeline{
-    agent any
-    tools{
-        jdk 'jdk25'
-        nodejs 'node25'
-    }
-    environment {
-        SCANNER_HOME=tool 'sonar-scanner'
-    }
-    stages {
-        stage('clean workspace'){
-            steps{
-                cleanWs()
-            }
-        }
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'main', url: 'https://github.com/devkunaljadhav/devsecops-2048.git'
-            }
-        }
-        stage("Sonarqube Analysis "){
-            steps{
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Game \
-                    -Dsonar.projectKey=Game '''
-                }
-            }
-        }
-        stage("quality gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
-                }
-            }
-        }
-        stage('Install Dependencies') {
-            steps {
-                sh "npm install"
-            }
-        }
-        stage('TRIVY FS SCAN') {
-            steps {
-                sh "trivy fs . > trivyfs.txt"
-            }
-        }
-        stage("Docker Build & Push"){
-            steps{
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
-                       sh "docker build -t 2048 ."
-                       sh "docker tag 2048 kunaljadhav1625/2048:latest "
-                       sh "docker push kunaljadhav1625/2048:latest "
-                    }
-                }
-            }
-        }
-        stage("TRIVY"){
-            steps{
-                sh "trivy image kunaljadhav1625/2048:latest > trivy.txt"
-            }
-        }
-        stage('Deploy to container'){
-            steps{
-                sh 'docker run -d --name 2048 -p 3000:3000 kunaljadhav1625/2048:latest'
-            }
-        }
-    }
-}
-
-
-If Error
-----------
-
-
-1. systemctl edit docker.service
-
-2. Add this part above the line _### Lines below this comment will be discarded:_
-   [Service]
-   Environment=DOCKER_MIN_API_VERSION=1.24
-
-3. Save the file and exit
-
-4. systemctl restart docker
-
-docker start sonar
-
-
-
-Let’s Update the kubeconfig
-============================
-
-Go to Jenkins instance and enter the below command
-
-aws eks update-kubeconfig --name EKS_CLUSTER --region ap-south-1
-
-cat .kube/config
-
-copy the entire content and save it as secret.txt in local machine
-
-kubectl get nodes
-
-Install Kubernetes Plugin
-----------------------
-
-Kubernetes Credentials
-Kubernetes Client API
-Kubernetes
-Kubernetes CLI
-
-goto manage Jenkins –> manage credentials –> Click on Jenkins global –> add credentials
-
-Kind= SEcret File
-choose = secret.txt
-ID: k8s
-desc : k8s
-
-
-pipeline{
-    agent any
-    tools{
-        jdk 'jdk25'
-        nodejs 'node25'
-    }
-    environment {
-        SCANNER_HOME=tool 'sonar-scanner'
-    }
-    stages {
-        stage('clean workspace'){
-            steps{
-                cleanWs()
-            }
-        }
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'main', url: 'https://github.com/devkunaljadhav/devsecops-2048.git'
-            }
-        }
-        stage("Sonarqube Analysis "){
-            steps{
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Game \
-                    -Dsonar.projectKey=Game '''
-                }
-            }
-        }
-        stage("quality gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
-                }
-            }
-        }
-        stage('Install Dependencies') {
-            steps {
-                sh "npm install"
-            }
-        }
-        stage('TRIVY FS SCAN') {
-            steps {
-                sh "trivy fs . > trivyfs.txt"
-            }
-        }
-        stage("Docker Build & Push"){
-            steps{
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
-                       sh "docker build -t 2048 ."
-                       sh "docker tag 2048 kunaljadhav1625/2048:latest "
-                       sh "docker push kunaljadhav1625/2048:latest "
-                    }
-                }
-            }
-        }
-        stage("TRIVY"){
-            steps{
-                sh "trivy image kunaljadhav1625/2048:latest > trivy.txt"
-            }
-        }
-        stage('Deploy to container'){
-            steps{
-                sh 'docker run -d --name 2048 -p 3000:3000 kunaljadhav1625/2048:latest'
-            }
-        }
-        stage('Deploy to kubernetes'){
-            steps{
-                script{
-                    withKubeConfig(caCertificate: '', clusterName: '', contextName: '', credentialsId: 'k8s', namespace: '', restrictKubeConfigAccess: false, serverUrl: '') {
-                       sh 'kubectl apply -f deployment.yaml'
-                  }
+Add the Kubernetes stage to the application pipeline:
+
+    stage('Deploy to Kubernetes') {
+        steps {
+            script {
+                withKubeConfig(
+                    credentialsId: 'k8s',
+                    restrictKubeConfigAccess: false
+                ) {
+                    sh 'kubectl apply -f deployment.yaml'
+                    sh 'kubectl apply -f service.yaml'
                 }
             }
         }
     }
-}
+
+Verify the deployment:
+
+    kubectl get pods
+    kubectl get deployments
+    kubectl get service
+    kubectl get endpoints
+
+Open the external hostname or IP address listed in the LoadBalancer service.
 
 
-Kubectl get pods
+14. LOAD BALANCER TROUBLESHOOTING
+----------------------------------
 
-kubectl get service
+If the LoadBalancer is not reachable:
 
-If load balancer dosent work ---> go to EKS security group and add All traffic : custom: default-sg
+1. Verify that the service is configured with type LoadBalancer.
+2. Verify that the EKS subnet tags support external load balancers.
+3. Check AWS security-group inbound rules.
+4. Restrict access to required ports instead of allowing unrestricted traffic.
+5. Inspect service and pod events:
+
+       kubectl describe service
+       kubectl describe pods
+       kubectl get events --sort-by='.lastTimestamp'
 
 
+15. VALIDATION CHECKLIST
+-------------------------
 
+- Jenkins is reachable and authentication is configured.
+- SonarQube is reachable and the quality gate is configured.
+- Docker Hub credentials are stored as a Jenkins credential.
+- Trivy reports are available in the workspace.
+- Docker images publish successfully.
+- EKS nodes are in the Ready state.
+- Kubernetes pods are in the Running state.
+- A LoadBalancer external address is assigned.
+- The 2048 application opens successfully in a browser.
+
+
+16. CLEANUP
+------------
+
+Remove Kubernetes resources:
+
+    kubectl delete -f deployment.yaml
+    kubectl delete -f service.yaml
+
+Remove the Docker container:
+
+    docker rm -f 2048
+
+Destroy Terraform infrastructure:
+
+    terraform destroy
+
+Delete credentials and external cloud resources that are no longer required.

@@ -2,117 +2,162 @@
 
 <div align="center">
 
-![Architecture](./Architecture-diagram.png)
+<img src="./Architecture-diagram.png" alt="DevSecOps Architecture" width="900">
 
-**A hands-on DevSecOps implementation that automates infrastructure, code quality checks, vulnerability scanning, container delivery, and Kubernetes deployment.**
+**An end-to-end DevSecOps implementation for building, scanning, securing, packaging, and deploying the 2048 web game on Amazon Elastic Kubernetes Service (Amazon EKS).**
 
-![AWS](https://img.shields.io/badge/AWS-EKS-FF9900?logo=amazonaws&logoColor=white)
-![Jenkins](https://img.shields.io/badge/Jenkins-CI%2FCD-D33833?logo=jenkins&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Container-2496ED?logo=docker&logoColor=white)
-![Kubernetes](https://img.shields.io/badge/Kubernetes-EKS-326CE5?logo=kubernetes&logoColor=white)
-![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC?logo=terraform&logoColor=white)
-![SonarQube](https://img.shields.io/badge/SonarQube-Code_Analysis-4E9BCD?logo=sonarqube&logoColor=white)
-![Trivy](https://img.shields.io/badge/Trivy-Security_Scan-1904DA?logo=aquasecurity&logoColor=white)
+[![AWS](https://img.shields.io/badge/AWS-EKS-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com/)
+[![Jenkins](https://img.shields.io/badge/Jenkins-CI%2FCD-D33833?style=for-the-badge&logo=jenkins&logoColor=white)](https://www.jenkins.io/)
+[![Docker](https://img.shields.io/badge/Docker-Containers-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-EKS-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC?style=for-the-badge&logo=terraform&logoColor=white)](https://www.terraform.io/)
+[![SonarQube](https://img.shields.io/badge/SonarQube-Code_Quality-4E9BCD?style=for-the-badge&logo=sonarqube&logoColor=white)](https://www.sonarqube.org/)
+[![Trivy](https://img.shields.io/badge/Trivy-Security-1904DA?style=for-the-badge&logo=aquasecurity&logoColor=white)](https://trivy.dev/)
 
 </div>
 
-## Overview
+---
 
-This project documents an end-to-end DevSecOps workflow for deploying a containerized 2048 web game to Amazon Elastic Kubernetes Service (Amazon EKS).
+## Table of Contents
 
-The Jenkins pipelines provision AWS infrastructure with Terraform and automate application delivery through:
+- [Project Overview](#project-overview)
+- [Architecture](#architecture)
+- [Technology Stack](#technology-stack)
+- [CI/CD Workflow](#cicd-workflow)
+- [Prerequisites](#prerequisites)
+- [Jenkins Configuration](#jenkins-configuration)
+- [Infrastructure Provisioning](#infrastructure-provisioning)
+- [Application Deployment](#application-deployment)
+- [Security Scanning](#security-scanning)
+- [Project Screenshots](#project-screenshots)
+- [Repository Guide](#repository-guide)
+- [Cleanup](#cleanup)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+- [Author](#author)
 
-- Source checkout and dependency installation
-- SonarQube static code analysis and quality gates
-- Trivy filesystem and container image scanning
-- Docker image build and push to Docker Hub
-- Deployment to Amazon EKS
-- Docker container validation
+---
 
-> This repository is primarily an implementation guide and evidence archive. The application source, Terraform modules, and Jenkinsfile are referenced as separate or external assets rather than stored as local directories in this repository.
+## Project Overview
+
+This repository documents a production-oriented DevSecOps workflow that combines infrastructure automation, continuous integration, security checks, container delivery, and Kubernetes deployment.
+
+The pipeline demonstrates how to:
+
+- Provision AWS infrastructure using Terraform
+- Automate builds and deployments with Jenkins
+- Analyze source code with SonarQube
+- Scan dependencies and filesystems with security tools
+- Build and publish container images to Docker Hub
+- Deploy workloads to Amazon EKS
+- Validate applications and container health
+- Review infrastructure and deployment evidence
+
+> This repository is primarily an implementation guide and evidence archive. It includes setup notes and screenshots; application source and Terraform modules may live in separate repositories as referenced in the implementation notes.
+
+---
 
 ## Architecture
 
-The workflow follows a single delivery path:
-
 ```text
 Developer
-   │
-   ▼
-GitHub ── webhook ──► Jenkins
-                         │
-                         ├──► SonarQube ── Code quality & quality gate
-                         ├──► Trivy ─────── Filesystem & image vulnerability scan
-                         ├──► npm ───────── Dependency installation & build
-                         └──► Docker ────── Build & push image
-                                              │
-                                              ▼
-                                      Docker Hub Registry
-                                              │
-                                              ▼
-                                      Amazon EKS Cluster
-                                              │
-                                              ▼
-                                      2048 Game Service
+    |
+    | Push / Pull Request
+    v
+GitHub  ─── Webhook ───>  Jenkins
+                              |
+                              +── Source Checkout
+                              +── SonarQube Analysis
+                              +── Quality Gate
+                              +── Dependency & Filesystem Scan
+                              +── Docker Build
+                              +── Container Vulnerability Scan
+                              |
+                              v
+                        Docker Hub Registry
+                              |
+                              v
+                       Amazon EKS Cluster
+                              |
+                              v
+                     2048 Web Application
+                              |
+                              v
+                    Kubernetes LoadBalancer
+                              |
+                              v
+                        End Users
 ```
 
-Infrastructure is provisioned through Terraform and stored in Amazon S3 as a remote backend.
+Infrastructure is provisioned with Terraform, and deployment state can be managed through a Jenkins pipeline or from the AWS CLI.
+
+---
 
 ## Technology Stack
 
-| Category | Tools |
+| Category | Technology |
 |---|---|
-| Cloud | Amazon Web Services |
+| Cloud Provider | Amazon Web Services (AWS) |
 | Compute | Amazon EC2, Amazon EKS |
-| CI/CD | Jenkins |
+| Networking | Amazon VPC, Security Groups, Load Balancer |
 | Infrastructure as Code | Terraform |
+| CI/CD | Jenkins |
+| Source Control | GitHub |
 | Containers | Docker |
 | Orchestration | Kubernetes |
-| Code Analysis | SonarQube |
-| Vulnerability Scanning | Trivy |
+| Code Quality | SonarQube |
+| Security Scanning | Trivy / OWASP Dependency-Check |
 | Package Management | npm |
-| Registry | Docker Hub |
+| Container Registry | Docker Hub |
 | Remote State | Amazon S3 |
+
+---
 
 ## CI/CD Workflow
 
 ### 1. Infrastructure Pipeline
 
-1. Checkout the infrastructure repository.
+1. Check out the infrastructure repository.
 2. Initialize Terraform.
-3. Validate and plan the configuration.
-4. Apply or destroy the AWS resources using a Jenkins parameter.
-5. Create or remove the EKS cluster and networking resources.
+3. Validate Terraform configuration.
+4. Generate an execution plan.
+5. Apply or destroy AWS resources through a Jenkins parameter.
+6. Create the EKS cluster and supporting infrastructure.
 
 ### 2. Application Pipeline
 
 1. Clean the Jenkins workspace.
-2. Checkout the 2048 application source.
-3. Run SonarQube analysis.
+2. Check out the 2048 application source.
+3. Run SonarQube static code analysis.
 4. Wait for the configured quality gate.
 5. Install npm dependencies.
 6. Scan the project filesystem with Trivy.
 7. Build the Docker image.
 8. Push the image to Docker Hub.
-9. Scan the built image with Trivy.
+9. Scan the published container image.
 10. Run the container for validation.
 11. Deploy the Kubernetes workload to EKS.
 
+---
+
 ## Prerequisites
 
-- An AWS account with permissions to manage EC2, EKS, IAM, VPC, and S3
+- An AWS account with permission to manage EC2, EKS, IAM, VPC, and S3
 - Ubuntu-based EC2 instance
-- Jenkins installed on the EC2 instance
-- Docker
-- Java 21 or later
+- Jenkins and Java 21 or later
+- Docker and Docker Compose
 - Terraform
 - AWS CLI
 - kubectl
 - Node.js and npm
 - SonarQube
 - Trivy
-- A Docker Hub account
-- A GitHub repository containing the 2048 application
+- Docker Hub account
+- GitHub account and repository
+- Jenkins credentials with least-privilege access
+
+---
 
 ## Jenkins Configuration
 
@@ -136,20 +181,22 @@ Infrastructure is provisioned through Terraform and stored in Amazon S3 as a rem
 |---|---|---|
 | `sonar-token` | Secret text | SonarQube authentication |
 | `docker` | Username and password | Docker Hub registry access |
-| `k8s` | Secret file | EKS kubeconfig access |
+| `k8s` | Secret file | Kubernetes/EKS configuration |
 
-Do not place credentials or kubeconfig files directly in source control.
+> Never place credentials, kubeconfig files, private keys, or access tokens in source control.
+
+---
 
 ## Infrastructure Provisioning
 
-Configure the AWS CLI on the Jenkins/EC2 host:
+Configure AWS CLI on the Jenkins host:
 
 ```bash
 aws configure
 aws sts get-caller-identity
 ```
 
-Create an EKS cluster with the infrastructure pipeline, or initialize the Terraform configuration manually:
+Run Terraform manually:
 
 ```bash
 terraform init
@@ -158,7 +205,7 @@ terraform plan
 terraform apply
 ```
 
-Update the kubeconfig after cluster creation:
+Update the kubeconfig after the cluster is created:
 
 ```bash
 aws eks update-kubeconfig \
@@ -170,39 +217,55 @@ Verify the cluster:
 
 ```bash
 kubectl get nodes
-kubectl get all
+kubectl get namespaces
+kubectl get all --all-namespaces
 ```
+
+---
 
 ## Application Deployment
 
-Example container operations:
+Build and publish the container image:
 
 ```bash
 docker build -t 2048 .
 docker tag 2048 <dockerhub-user>/2048:latest
 docker push <dockerhub-user>/2048:latest
-docker run -d --name 2048 -p 3000:3000 <dockerhub-user>/2048:latest
 ```
 
-Deploy the Kubernetes manifests:
+Run the container locally for validation:
+
+```bash
+docker run -d \
+  --name 2048 \
+  -p 3000:3000 \
+  <dockerhub-user>/2048:latest
+```
+
+Deploy the Kubernetes resources:
 
 ```bash
 kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+
 kubectl get pods
+kubectl get deployments
 kubectl get service
 ```
 
-Open the external load balancer address shown by `kubectl get service` to access the 2048 game.
+Open the external address shown by `kubectl get service` to access the 2048 game.
+
+---
 
 ## Security Scanning
 
-Run a filesystem scan before building:
+Scan the project filesystem before building:
 
 ```bash
 trivy fs .
 ```
 
-Scan the generated container image:
+Scan the container image:
 
 ```bash
 trivy image <dockerhub-user>/2048:latest
@@ -210,33 +273,36 @@ trivy image <dockerhub-user>/2048:latest
 
 Recommended security practices:
 
-- Rotate exposed credentials immediately.
+- Rotate credentials immediately if they are exposed.
 - Store secrets in Jenkins Credentials or AWS Secrets Manager.
-- Keep Jenkins and SonarQube behind appropriate network controls.
-- Avoid public Kubernetes API or Jenkins endpoints unless required.
-- Review Trivy findings and set appropriate pipeline failure thresholds.
-- Restrict the Jenkins EC2 IAM role using least-privilege permissions.
+- Restrict Jenkins and SonarQube network access.
+- Use least-privilege AWS IAM policies.
+- Configure explicit Trivy failure thresholds.
+- Keep the Jenkins, Docker, Kubernetes, and AWS tooling updated.
+- Prefer private Kubernetes and Jenkins endpoints where possible.
 
 > [!IMPORTANT]
-> The repository currently contains or has contained sensitive environment artifacts. Never commit kubeconfig files, AWS credentials, Docker passwords, SonarQube tokens, certificates, or private keys. Rotate any values that have already been shared.
+> This repository contains or may have contained sensitive environment artifacts. Never commit kubeconfig files, AWS credentials, Docker passwords, SonarQube tokens, certificates, or private keys. Rotate any values that have already been shared.
+
+---
 
 ## Project Screenshots
 
-### Jenkins Pipeline
+### Jenkins Application Pipeline
 
-![Jenkins Pipeline](./screenshoots/Applicatation-Pipeline.png)
+<img src="./screenshoots/Applicatation-Pipeline.png" alt="Jenkins Application Pipeline" width="900">
 
 ### EKS Kubernetes Pipeline
 
-![Kubernetes Pipeline](./screenshoots/k8s-cluster-pipeline.png)
+<img src="./screenshoots/k8s-cluster-pipeline.png" alt="EKS Kubernetes Pipeline" width="900">
 
 ### Docker Hub Images
 
-![Docker Hub Images](./screenshoots/docker-hub-images.png)
+<img src="./screenshoots/docker-hub-images.png" alt="Docker Hub Images" width="900">
 
 ### SonarQube Status
 
-![SonarQube Status](./screenshoots/sonarqube-status.png)
+<img src="./screenshoots/sonarqube-status.png" alt="SonarQube Status" width="900">
 
 ### AWS Infrastructure Evidence
 
@@ -246,32 +312,45 @@ Recommended security practices:
 
 ### Deployed Application
 
-![Deployed 2048 Application](./screenshoots/final-applicatation.png)
+<img src="./screenshoots/final-applicatation.png" alt="Deployed 2048 Application" width="900">
+
+---
 
 ## Repository Guide
 
 | Path | Purpose |
 |---|---|
-| [`Architecture-diagram.png`](./Architecture-diagram.png) | DevSecOps workflow architecture |
+| [`Architecture-diagram.png`](./Architecture-diagram.png) | DevSecOps architecture diagram |
 | [`Deploying 2048 Game - new.txt`](./Deploying%202048%20Game%20-%20new.txt) | Detailed setup and Jenkins pipeline notes |
 | [`errors.txt`](./errors.txt) | Recorded troubleshooting information |
 | [`screenshoots/`](./screenshoots/) | AWS, Jenkins, SonarQube, Docker, Kubernetes, and application evidence |
-| [`secret.txt`](./secret.txt) | Local kubeconfig reference; do not commit or publish |
+| [`secret.txt`](./secret.txt) | Local sensitive configuration reference; do not commit or publish |
+
+---
 
 ## Cleanup
 
-Destroy the infrastructure when it is no longer required:
+Remove AWS infrastructure:
 
 ```bash
 terraform destroy
 ```
 
-Remove the Jenkins container and application container if needed:
+Remove local containers:
 
 ```bash
 docker ps -a
 docker rm -f <container-id>
 ```
+
+Remove the Kubernetes resources:
+
+```bash
+kubectl delete -f deployment.yaml
+kubectl delete -f service.yaml
+```
+
+---
 
 ## Troubleshooting
 
@@ -281,6 +360,14 @@ docker rm -f <container-id>
 sudo chmod 777 /var/run/docker.sock
 sudo systemctl restart docker
 docker ps
+```
+
+### Jenkins cannot access Docker
+
+```bash
+sudo usermod -aG docker jenkins
+sudo systemctl restart jenkins
+sudo systemctl restart docker
 ```
 
 ### Kubernetes authentication failure
@@ -293,34 +380,44 @@ aws eks update-kubeconfig \
 kubectl get nodes
 ```
 
-### Load balancer not accessible
+### Load balancer is not accessible
 
-Verify the Kubernetes service type and ensure the EKS security groups allow the required inbound traffic from the public internet.
-
-### Jenkins cannot access Docker
-
-Restart Docker and add the Jenkins user to the Docker group if the environment requires it:
+Check the Kubernetes service type, external IP/hostname, security groups, and public subnet configuration:
 
 ```bash
-sudo usermod -aG docker jenkins
-sudo systemctl restart docker
+kubectl describe service
+kubectl get endpoints
 ```
+
+---
 
 ## Contributing
 
-Contributions are welcome:
+Contributions are welcome.
 
 1. Fork the repository.
 2. Create a descriptive feature branch.
-3. Commit the changes with a clear message.
-4. Open a pull request.
+3. Make focused, well-documented changes.
+4. Commit with a clear message.
+5. Open a pull request.
+
+---
 
 ## License
 
-Add a LICENSE file before defining the legal terms for reuse and distribution.
+No license has been included in this repository. Add a `LICENSE` file if you want to define reuse and distribution terms.
+
+---
 
 ## Author
 
-**Kunal Jadhav**
+<div align="center">
 
-- GitHub: [devkunaljadhav](https://github.com/devkunaljadhav)
+# 👨‍💻 Kunal Jadhav
+
+[![Portfolio](https://img.shields.io/badge/Portfolio-kunalcloud.shop-181717?style=for-the-badge&logo=google-chrome&logoColor=white)](https://kunalcloud.shop/)
+[![GitHub](https://img.shields.io/badge/GitHub-devkunaljadhav-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/devkunaljadhav)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Kunal_Jadhav-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/devkunaljadhav)
+[![Email](https://img.shields.io/badge/Email-kunaljadhav1625@gmail.com-EA4335?style=for-the-badge&logo=gmail&logoColor=white)](mailto:kunaljadhav1625@gmail.com)
+
+</div>
